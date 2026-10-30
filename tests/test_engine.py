@@ -5,7 +5,7 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.util import Inches
 
-from big_prezo import extract_manifest_file, process_presentation, probable_section_boundary
+from big_prezo import apply_section_overrides, extract_manifest_file, process_presentation, probable_section_boundary
 
 
 class EngineTests(unittest.TestCase):
@@ -164,6 +164,66 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(manifest["slides"][0]["title"], "")
         self.assertTrue(manifest["slides"][1]["probable_section_boundary"])
         self.assertEqual(len(Presentation(output).slides), 3)
+
+    def test_reviewed_section_correction_changes_manifest_and_toc(self):
+        output = self.root / "corrected.pptx"
+        rows = [
+            [1, "Quarterly update", False, "Opening"],
+            [2, "Part 1 — Delivery", False, "Delivery"],
+            [3, "", True, "Delivery"],
+            [4, "Risks and next steps", False, "Delivery"],
+        ]
+        manifest = process_presentation(self.source, output, section_rows=rows)
+        self.assertEqual(manifest["slides"][1]["section"], "Opening")
+        self.assertTrue(manifest["slides"][2]["probable_section_boundary"])
+        self.assertEqual(manifest["slides"][2]["section"], "Delivery")
+        result = Presentation(output)
+        toc_text = " ".join(shape.text for shape in result.slides[0].shapes if shape.has_text_frame)
+        self.assertIn("Delivery", toc_text)
+        toc_entry = next(s for s in result.slides[0].shapes if s.name == "BigPrezo::TocEntry::3")
+        self.assertEqual(toc_entry.click_action.target_slide.slide_id,
+                         result.slides[manifest["toc_slide_count"] + 2].slide_id)
+
+    def test_existing_native_hyperlink_is_preserved(self):
+        linked_source = self.root / "linked_source.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[5])
+        slide.shapes.title.text = "Source slide"
+        box = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(4), Inches(1))
+        box.text = "Existing link"
+        box.click_action.hyperlink.address = "https://example.com/presentation-reference"
+        target = prs.slides.add_slide(prs.slide_layouts[5])
+        target.shapes.title.text = "Existing internal target"
+        internal = slide.shapes.add_textbox(Inches(1), Inches(3), Inches(4), Inches(1))
+        internal.text = "Jump within deck"
+        internal.click_action.target_slide = target
+        prs.save(linked_source)
+        output = self.root / "linked_copy.pptx"
+        process_presentation(linked_source, output)
+        copied = Presentation(output)
+        source_slide = copied.slides[1]
+        link_shape = next(shape for shape in source_slide.shapes if shape.has_text_frame and shape.text == "Existing link")
+        self.assertEqual(link_shape.click_action.hyperlink.address,
+                         "https://example.com/presentation-reference")
+        internal_shape = next(shape for shape in source_slide.shapes
+                              if shape.has_text_frame and shape.text == "Jump within deck")
+        self.assertEqual(internal_shape.click_action.target_slide.slide_id, copied.slides[2].slide_id)
+
+    def test_large_deck_uses_section_summary_contents(self):
+        large = self.root / "large.pptx"
+        prs = Presentation()
+        for number in range(1, 36):
+            slide = prs.slides.add_slide(prs.slide_layouts[5])
+            slide.shapes.title.text = ({1: "Part 1 — Opening", 20: "Part 2 — Delivery"}.get(number)
+                                        or f"Slide {number}")
+        prs.save(large)
+        output = self.root / "large_nav.pptx"
+        manifest = process_presentation(large, output)
+        toc = list(Presentation(output).slides)[0]
+        entries = [s for s in toc.shapes if s.name.startswith("BigPrezo::TocEntry::")]
+        self.assertEqual(len(entries), 2)
+        self.assertIn("Part 1", " ".join(s.text for s in entries))
+        self.assertIn("Part 2", " ".join(s.text for s in entries))
 
 
 if __name__ == "__main__":

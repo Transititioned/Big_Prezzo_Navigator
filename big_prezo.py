@@ -76,6 +76,39 @@ def manifest_for_slides(slides: Iterable[Any], *, compact_limit: int = 500) -> d
     }
 
 
+def apply_section_overrides(manifest: dict[str, Any], rows: Iterable[Iterable[Any]]) -> dict[str, Any]:
+    """Apply reviewed per-slide section starts and names to a manifest.
+
+    Rows are (slide number, title, start section, section name). A section name
+    is taken from a row only when that row starts a section; other rows inherit.
+    """
+    by_number: dict[int, tuple[bool, str]] = {}
+    for row in rows:
+        if len(row) < 4:
+            continue
+        try:
+            number = int(row[0])
+        except (TypeError, ValueError):
+            continue
+        if number < 1 or number > manifest["source_slide_count"]:
+            continue
+        boundary = row[2] is True or str(row[2]).strip().lower() in {"true", "yes", "1", "y"}
+        by_number[number] = (boundary, str(row[3] or "").strip())
+    section = "Opening"
+    for record in manifest["slides"]:
+        boundary, name = by_number.get(record["slide_number"], (record["probable_section_boundary"], record["section"]))
+        if boundary:
+            section = name or f"Section at slide {record['slide_number']}"
+        record["probable_section_boundary"] = boundary
+        record["section"] = section
+    count = sum(bool(record["probable_section_boundary"]) for record in manifest["slides"])
+    manifest["section_detection"] = {
+        "probable_section_count": count,
+        "all_slides_fallback": count == 0,
+    }
+    return manifest
+
+
 def _remove_shape(slide: Any, shape: Any) -> None:
     shape._element.getparent().remove(shape._element)
 
@@ -167,7 +200,27 @@ def _add_toc_slides(prs: Any, source_slides: list[Any], manifest: dict[str, Any]
                     *, rows_per_toc: int = _DEFAULT_ROWS_PER_TOC) -> list[Any]:
     layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[-1]
     records = manifest["slides"]
-    chunks = [records[i:i + rows_per_toc] for i in range(0, len(records), rows_per_toc)] or [[]]
+    # Long decks are easier to scan when the first contents page is a concise
+    # section index. Small decks retain the familiar all-slide contents list.
+    concise = len(records) >= 30 and any(record["probable_section_boundary"] for record in records)
+    if concise:
+        grouped: list[tuple[str, list[dict[str, Any]]]] = []
+        for record in records:
+            label = _section_label(record)
+            if not grouped or grouped[-1][0] != label:
+                grouped.append((label, []))
+            grouped[-1][1].append(record)
+        toc_records = []
+        for label, group in grouped:
+            first, last = group[0]["slide_number"], group[-1]["slide_number"]
+            toc_records.append({
+                "slide_number": first,
+                "title": f"{label} · slides {first}–{last}" if first != last else f"{label} · slide {first}",
+                "section": label,
+            })
+    else:
+        toc_records = records
+    chunks = [toc_records[i:i + rows_per_toc] for i in range(0, len(toc_records), rows_per_toc)] or [[]]
     toc_slides: list[Any] = [prs.slides.add_slide(layout) for _ in chunks]
     width, height = prs.slide_width, prs.slide_height
     for page_index, chunk in enumerate(chunks):
@@ -212,7 +265,8 @@ def _add_toc_slides(prs: Any, source_slides: list[Any], manifest: dict[str, Any]
 
 def process_presentation(input_path: str | Path, output_path: str | Path,
                          manifest_path: str | Path | None = None, *,
-                         rows_per_toc: int = _DEFAULT_ROWS_PER_TOC) -> dict[str, Any]:
+                         rows_per_toc: int = _DEFAULT_ROWS_PER_TOC,
+                         section_rows: Iterable[Iterable[Any]] | None = None) -> dict[str, Any]:
     if type(rows_per_toc) is not int or rows_per_toc <= 0:
         raise ValueError(f"rows_per_toc must be a positive integer; got {rows_per_toc!r}.")
     source = Path(input_path).resolve()
@@ -233,6 +287,8 @@ def process_presentation(input_path: str | Path, output_path: str | Path,
             if shape.name.startswith(_MARKER_HOME):
                 _remove_shape(slide, shape)
     manifest = manifest_for_slides(original_slides)
+    if section_rows is not None:
+        apply_section_overrides(manifest, section_rows)
     toc_slides = _add_toc_slides(prs, original_slides, manifest, rows_per_toc=rows_per_toc)
     for old_slide in old_toc_slides:
         _delete_slide(prs, old_slide)

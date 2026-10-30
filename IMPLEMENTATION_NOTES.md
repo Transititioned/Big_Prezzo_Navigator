@@ -1,4 +1,23 @@
-# Implementation Notes — Pass 1
+# Implementation Notes — Pass 2A
+
+## Pass 2A — local Gradio MVP
+
+- Added `app.py`, a small Gradio Blocks workflow: upload a `.pptx`, optionally enter purpose/takeaway/audience, preview extracted slide list, review/edit section boundaries and names, then download a new navigable PPTX and JSON manifest.
+- Section review uses one row per source slide. A checked `Start section` row begins a named section; following slides inherit that name until the next checked row. `process_presentation` accepts those reviewed rows, so corrections update the manifest and the actual contents links.
+- Long decks (30 slides or more) receive a compact section contents page with one link to each section's first slide. Smaller decks retain the slide-by-slide list. Existing native Home links remain.
+- Added `run_local.bat`. It selects an installed Python 3.12, 3.13, 3.11, or default Python 3, creates `.venv` in the repository, installs `requirements.txt` on first use, and starts Gradio on `127.0.0.1:7860` with `share=False`.
+- Uploads are processed at their Gradio temporary path and never modified. The app enforces a 250 MB cap. Generated files receive random names and are placed in the OS temp directory for Gradio download handling; generated files older than 24 hours are cleaned during generation. It does not persist uploaded decks, notes, accounts, database records, or telemetry.
+- Context answers are included in the downloadable manifest only. They do not trigger AI or alter slide content.
+- The app exposes a normal `demo` Blocks object and has no Spaces-only dependencies. Hosting is not configured.
+- Pass 2A intentionally stops before the HTML speaking-notes console. Do not start Pass 2B until requested.
+
+## Pass 2A validation
+
+- `tests/test_app.py` covers extraction, editable section correction reaching the generated contents hyperlink and JSON manifest, preservation of source bytes, and speaker notes.
+- `tests/test_engine.py` adds coverage for section corrections and the long-deck concise contents page; existing Pass 1 checks remain.
+- The PowerPoint slideshow interaction and visual rendering still need a manual desktop PowerPoint check. No deployment has been performed.
+
+## Pass 1 review (retained)
 
 ## Review
 
