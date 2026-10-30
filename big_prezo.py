@@ -204,27 +204,47 @@ def _rgb_from_title(slides: list[Any]) -> RGBColor:
     return RGBColor(45, 71, 90)
 
 
-def _add_home_button(slide: Any, target: Any, number: int, width: int, height: int,
-                     accent: RGBColor) -> None:
+def _home_button_position(slides: list[Any], width: int, height: int) -> tuple[int, int]:
+    """Choose one low-overlap footer position shared by the source slides."""
     button_w, button_h = Inches(1.02), Inches(0.34)
-    margin = Inches(0.22)
-    # Search along the margins instead of assuming the bottom-right is free.
-    # Minimize actual overlap area so a large background shape does not count
-    # the same as a tiny footer label.
-    positions = [(x, y) for y in (margin, height - button_h - margin)
-                 for x in (margin, width - button_w - margin,
-                           (width - button_w) // 2)]
-    def score(pos: tuple[int, int]) -> int:
-        x, y = pos
-        total = 0
+    margin, gap = Inches(0.22), Inches(0.12)
+    right = width - button_w - margin
+    bottom = height - button_h - margin
+    # Check common alignments and footer-object edges to find gaps between logos/text.
+    x_candidates = {margin, right, (width - button_w) // 2}
+    footer_top = height - Inches(0.85)
+    for slide in slides:
         for shape in slide.shapes:
-            if shape.name.startswith(_MARKER_HOME):
+            if shape.name.startswith(_MARKER_HOME) or shape.top + shape.height < footer_top:
                 continue
-            overlap_w = max(0, min(x + button_w, shape.left + shape.width) - max(x, shape.left))
-            overlap_h = max(0, min(y + button_h, shape.top + shape.height) - max(y, shape.top))
-            total += overlap_w * overlap_h
-        return total
-    x, y = min(positions, key=score)
+            x_candidates.add(max(margin, min(right, shape.left - button_w - gap)))
+            x_candidates.add(max(margin, min(right, shape.left + shape.width + gap)))
+    # Prefer the footer row; use one row above it only when every footer option is worse.
+    y_candidates = [bottom, bottom - Inches(0.46)]
+    positions = [(x, y) for y in y_candidates for x in sorted(x_candidates)]
+
+    def score(pos: tuple[int, int]) -> tuple[int, int, int, int]:
+        x, y = pos
+        total = worst = 0
+        for slide in slides:
+            overlap = 0
+            for shape in slide.shapes:
+                if shape.name.startswith(_MARKER_HOME):
+                    continue
+                overlap_w = max(0, min(x + button_w, shape.left + shape.width) - max(x, shape.left))
+                overlap_h = max(0, min(y + button_h, shape.top + shape.height) - max(y, shape.top))
+                overlap += overlap_w * overlap_h
+            total += overlap
+            worst = max(worst, overlap)
+        return total, worst, y_candidates.index(y), x
+
+    return min(positions, key=score)
+
+
+def _add_home_button(slide: Any, target: Any, number: int, width: int, height: int,
+                     accent: RGBColor, position: tuple[int, int] | None = None) -> None:
+    button_w, button_h = Inches(1.02), Inches(0.34)
+    x, y = position or _home_button_position([slide], width, height)
     button = _add_text_shape(slide, x, y, button_w, button_h, "HOME · TOC",
                              font_size=9, color=RGBColor(255, 255, 255), bold=True,
                              name=f"{_MARKER_HOME}{number}", align=PP_ALIGN.CENTER,
@@ -380,8 +400,10 @@ def process_presentation(input_path: str | Path, output_path: str | Path,
     toc_slides = _add_toc_slides(prs, original_slides, manifest, rows_per_toc=rows_per_toc)
     for old_slide in old_toc_slides:
         _delete_slide(prs, old_slide)
+    home_position = _home_button_position(original_slides, prs.slide_width, prs.slide_height)
     for number, slide in enumerate(original_slides, 1):
-        _add_home_button(slide, toc_slides[0], number, prs.slide_width, prs.slide_height, _rgb_from_title(original_slides))
+        _add_home_button(slide, toc_slides[0], number, prs.slide_width, prs.slide_height,
+                         _rgb_from_title(original_slides), home_position)
     _insert_slides_at_front(prs, toc_slides)
     toc_count = len(toc_slides)
     manifest["toc_slide_count"] = toc_count

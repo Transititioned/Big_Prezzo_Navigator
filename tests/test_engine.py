@@ -105,6 +105,35 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(sum(getattr(s, "is_placeholder", False) for s in generated.shapes),
                              sum(getattr(s, "is_placeholder", False) for s in original.shapes))
 
+    def test_home_button_uses_shared_gap_between_footer_items(self):
+        footer = self.root / "footer.pptx"
+        prs = Presentation()
+        for index in range(3):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            # Distinct footer arrangements leave the same clear centre gap.
+            slide.shapes.add_textbox(Inches(0.25), Inches(7.0), Inches(1.8), Inches(0.3)).text = f"Logo {index}"
+            slide.shapes.add_textbox(Inches(11.25), Inches(7.0), Inches(1.8), Inches(0.3)).text = f"Footer {index}"
+            if index == 1:
+                slide.shapes.add_textbox(Inches(5.1), Inches(7.0), Inches(3.0), Inches(0.3)).text = "Page number"
+        prs.save(footer)
+        output = self.root / "footer_nav.pptx"
+        manifest = process_presentation(footer, output)
+        result = Presentation(output)
+        source_slides = list(result.slides)[manifest["toc_slide_count"]:]
+        buttons = [next(shape for shape in slide.shapes if shape.name.startswith("BigPrezo::Home::"))
+                   for slide in source_slides]
+        self.assertEqual(len({(button.left, button.top) for button in buttons}), 1)
+        for slide, button in zip(source_slides, buttons):
+            for shape in slide.shapes:
+                if shape is button or shape.name.startswith("BigPrezo::Home::"):
+                    continue
+                overlap_w = max(0, min(button.left + button.width, shape.left + shape.width)
+                                - max(button.left, shape.left))
+                overlap_h = max(0, min(button.top + button.height, shape.top + shape.height)
+                                - max(button.top, shape.top))
+                self.assertEqual(overlap_w * overlap_h, 0, shape.name)
+            self.assertEqual(button.click_action.target_slide.slide_id, result.slides[0].slide_id)
+
     def test_contents_generation_with_title_and_content_layout(self):
         alternate = self.root / "alternate_layout.pptx"
         prs = Presentation()
