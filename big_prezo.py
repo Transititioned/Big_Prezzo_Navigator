@@ -93,11 +93,7 @@ def _remove_generated_navigation(prs: Any) -> None:
     for slide in list(prs.slides):
         generated_toc = any(shape.name == _MARKER_TOC for shape in slide.shapes)
         if generated_toc:
-            for sld_id in list(slide_ids):
-                if prs.part.related_part(sld_id.rId).partname == slide.part.partname:
-                    slide_ids.remove(sld_id)
-                    prs.part.drop_rel(sld_id.rId)
-                    break
+            _delete_slide(prs, slide)
             continue
         for shape in list(slide.shapes):
             if shape.name.startswith(_MARKER_HOME):
@@ -217,6 +213,8 @@ def _add_toc_slides(prs: Any, source_slides: list[Any], manifest: dict[str, Any]
 def process_presentation(input_path: str | Path, output_path: str | Path,
                          manifest_path: str | Path | None = None, *,
                          rows_per_toc: int = _DEFAULT_ROWS_PER_TOC) -> dict[str, Any]:
+    if type(rows_per_toc) is not int or rows_per_toc <= 0:
+        raise ValueError(f"rows_per_toc must be a positive integer; got {rows_per_toc!r}.")
     source = Path(input_path).resolve()
     output = Path(output_path).resolve()
     if source == output:

@@ -103,6 +103,28 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(output.is_file())
         self.assertEqual(manifest["source_slide_count"], 4)
 
+    def test_extract_manifest_omits_generated_contents_and_home_shapes(self):
+        generated = self.root / "generated.pptx"
+        manifest_path = self.root / "generated_manifest.json"
+        process_presentation(self.source, generated)
+
+        manifest = extract_manifest_file(generated, manifest_path)
+
+        self.assertTrue(manifest_path.is_file())
+        self.assertEqual(manifest["source_slide_count"], 4)
+        self.assertEqual([record["title"] for record in manifest["slides"]],
+                         ["Quarterly update", "Part 1 — Delivery", "", "Risks and next steps"])
+        extracted_text = " ".join(record["compact_text"] for record in manifest["slides"])
+        self.assertNotIn("HOME / TOC", extracted_text)
+        self.assertNotIn("Contents", extracted_text)
+
+    def test_rows_per_toc_rejects_invalid_values(self):
+        for value in (0, -1, 1.5, "3", True, None):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "rows_per_toc must be a positive integer"):
+                    process_presentation(self.source, self.root / "invalid.pptx",
+                                         rows_per_toc=value)
+
     def test_reprocessing_does_not_accumulate_navigation(self):
         first = self.root / "first.pptx"
         second = self.root / "second.pptx"
