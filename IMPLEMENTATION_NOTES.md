@@ -1,21 +1,25 @@
 # Implementation Notes — Pass 2A
 
-## Pass 2A — local Gradio MVP
+## Pass 2A — local Gradio workflow correction
 
-- Added `app.py`, a small Gradio Blocks workflow: upload a `.pptx`, optionally enter purpose/takeaway/audience, preview extracted slide list, review/edit section boundaries and names, then download a new navigable PPTX and JSON manifest.
-- Section review uses one row per source slide. A checked `Start section` row begins a named section; following slides inherit that name until the next checked row. `process_presentation` accepts those reviewed rows, so corrections update the manifest and the actual contents links.
+- The default workflow is upload, generate a navigable PowerPoint, then download it. Slide analysis and contents organization run automatically.
+- Purpose, audience, and takeaway remain optional inputs. The collapsed **Advanced options** accordion exposes an editable per-slide grouping table; it is never needed for generation.
+- A checked `Start section` row begins a named group; following slides inherit its name until another checked row. Overrides still affect generated contents and the internal manifest.
+- The user-facing generation result is a single `.pptx` download. The JSON manifest remains an internal temporary artifact and is not presented as a required download.
 - Long decks (30 slides or more) receive a compact section contents page with one link to each section's first slide. Smaller decks retain the slide-by-slide list. Existing native Home links remain.
 - Added `run_local.bat`. It selects an installed Python 3.12, 3.13, 3.11, or default Python 3, creates `.venv` in the repository, installs `requirements.txt` on first use, and starts Gradio on `127.0.0.1:7860` with `share=False`.
-- Uploads are processed at their Gradio temporary path and never modified. The app enforces a 250 MB cap. Generated files receive random names and are placed in the OS temp directory for Gradio download handling; generated files older than 24 hours are cleaned during generation. It does not persist uploaded decks, notes, accounts, database records, or telemetry.
+- Uploads are processed at their Gradio temporary path and never modified. The app enforces a 250 MB cap, rejects missing/invalid input with clear messages, and cleans partial outputs on failure. Generated files receive random names and are placed in the OS temp directory for Gradio download handling; generated files older than 24 hours are cleaned during generation. It does not persist uploaded decks, accounts, database records, or telemetry.
+- Standard-library `RotatingFileHandler` writes local `big_prezo.log` in the OS temporary output folder at 1 MB with three backups. Startup, processing stages, completion, and failure tracebacks are correlated by an eight-character job ID. Logs exclude slide text, notes, and optional context.
 - Context answers are included in the downloadable manifest only. They do not trigger AI or alter slide content.
 - The app exposes a normal `demo` Blocks object and has no Spaces-only dependencies. Hosting is not configured.
 - Pass 2A intentionally stops before the HTML speaking-notes console. Do not start Pass 2B until requested.
 
 ## Pass 2A validation
 
-- `tests/test_app.py` covers extraction, editable section correction reaching the generated contents hyperlink and JSON manifest, preservation of source bytes, and speaker notes.
+- `tests/test_app.py` covers extraction, advanced grouping changes reaching the generated contents hyperlink and manifest, preservation of source bytes and speaker notes, one-click generation without review, invalid/missing upload messages, logged tracebacks with job IDs, and the simplified/collapsed UI.
 - `tests/test_engine.py` adds coverage for section corrections and the long-deck concise contents page; existing Pass 1 checks remain.
-- The PowerPoint slideshow interaction and visual rendering still need a manual desktop PowerPoint check. No deployment has been performed.
+- A successful call and structural reopen establish that the output is a valid PPTX. Confirming desktop PowerPoint slideshow interaction and visual rendering still requires a manual desktop check. No deployment has been performed.
+- Browser reproduction found the generation failure: the callback returned a `pathlib.Path` to Gradio's `File` postprocessor. The engine had already produced a valid PPTX, but Gradio's output serializer rejects that value type and displayed `Error` in both old output panels. Returning the filesystem path as `str` fixes the actual exception; a regression test asserts this Gradio-facing contract.
 
 ## Pass 1 review (retained)
 
