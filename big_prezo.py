@@ -204,28 +204,31 @@ def _rgb_from_title(slides: list[Any]) -> RGBColor:
     return RGBColor(45, 71, 90)
 
 
-def _overlaps(x: int, y: int, w: int, h: int, shape: Any) -> bool:
-    return (x < shape.left + shape.width and x + w > shape.left
-            and y < shape.top + shape.height and y + h > shape.top)
-
-
 def _add_home_button(slide: Any, target: Any, number: int, width: int, height: int,
                      accent: RGBColor) -> None:
-    button_w, button_h = Inches(0.94), Inches(0.32)
-    margin = Inches(0.20)
-    positions = [
-        (width - button_w - margin, margin),
-        (width - button_w - margin, height - button_h - margin),
-        (margin, height - button_h - margin),
-        (margin, margin),
-    ]
-    # Prefer a quiet corner with no existing content, including footers and logos.
-    x, y = min(positions, key=lambda pos: sum(
-        _overlaps(pos[0], pos[1], button_w, button_h, shape)
-        for shape in slide.shapes if not shape.name.startswith(_MARKER_HOME)))
+    button_w, button_h = Inches(1.02), Inches(0.34)
+    margin = Inches(0.22)
+    # Search along the margins instead of assuming the bottom-right is free.
+    # Minimize actual overlap area so a large background shape does not count
+    # the same as a tiny footer label.
+    positions = [(x, y) for y in (margin, height - button_h - margin)
+                 for x in (margin, width - button_w - margin,
+                           (width - button_w) // 2)]
+    def score(pos: tuple[int, int]) -> int:
+        x, y = pos
+        total = 0
+        for shape in slide.shapes:
+            if shape.name.startswith(_MARKER_HOME):
+                continue
+            overlap_w = max(0, min(x + button_w, shape.left + shape.width) - max(x, shape.left))
+            overlap_h = max(0, min(y + button_h, shape.top + shape.height) - max(y, shape.top))
+            total += overlap_w * overlap_h
+        return total
+    x, y = min(positions, key=score)
     button = _add_text_shape(slide, x, y, button_w, button_h, "HOME · TOC",
-                             font_size=9, color=accent, bold=True,
-                             name=f"{_MARKER_HOME}{number}", align=PP_ALIGN.CENTER)
+                             font_size=9, color=RGBColor(255, 255, 255), bold=True,
+                             name=f"{_MARKER_HOME}{number}", align=PP_ALIGN.CENTER,
+                             fill=accent)
     _set_hyperlink(button, target)
 
 
@@ -291,6 +294,11 @@ def _add_toc_slides(prs: Any, source_slides: list[Any], manifest: dict[str, Any]
     accent = _rgb_from_title(source_slides)
     for page_index, chunk in enumerate(chunks):
         slide = toc_slides[page_index]
+        # Layout 6 is usually blank, but custom masters can still expose title
+        # or content placeholders. Remove placeholders from engine-owned pages.
+        for shape in list(slide.shapes):
+            if getattr(shape, "is_placeholder", False):
+                _remove_shape(slide, shape)
         marker = _add_text_shape(slide, 0, 0, 1, 1, "", font_size=1,
                                  color=accent, name=_MARKER_TOC)
         marker.left = -Inches(1)
@@ -299,21 +307,27 @@ def _add_toc_slides(prs: Any, source_slides: list[Any], manifest: dict[str, Any]
         _add_text_shape(slide, Inches(0.58), Inches(0.30), width - Inches(1.16), Inches(0.48),
                         heading, font_size=25, color=accent, bold=True,
                         name="BigPrezo::TocHeading")
-        top, bottom = Inches(1.02), Inches(0.72)
-        columns = 2
+        top, bottom = Inches(1.08), Inches(0.70)
+        # Keep small contents lists visually compact; use a second column once
+        # a single column would become tall enough to feel sparse.
+        columns = 1 if len(chunk) <= 7 else 2
         per_column = (len(chunk) + columns - 1) // columns
         gap = Inches(0.34)
         side = Inches(0.58)
         col_w = (width - side * 2 - gap) // columns
-        row_h = (height - top - bottom) // max(1, per_column)
+        available_h = height - top - bottom
+        row_h = min(Inches(0.58), available_h // max(1, per_column))
+        # Center short lists in the usable region without stretching their rows.
+        list_h = row_h * per_column
+        list_top = top + max(0, (available_h - list_h) // 2)
         for item_index, item in enumerate(chunk):
             col, row_index = divmod(item_index, per_column)
-            row_y = top + row_index * row_h
+            row_y = list_top + row_index * row_h
             x = side + col * (col_w + gap)
             is_section = item["kind"] == "section"
             color = accent if is_section else RGBColor(42, 50, 58)
             shape = _add_text_shape(
-                slide, x, row_y, col_w, row_h - Inches(0.025), item["text"],
+                slide, x, row_y, col_w, row_h - Inches(0.035), item["text"],
                 font_size=12 if is_section else 11, color=color, bold=is_section,
                 name=f"BigPrezo::TocEntry::{item['slide_number']}")
             shape.text_frame.word_wrap = True

@@ -79,6 +79,49 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(buttons[0].click_action.target_slide.slide_id,
                              result.slides[0].slide_id)
 
+    def test_generated_contents_are_compact_placeholder_free_and_home_is_visible(self):
+        output = self.root / "polished.pptx"
+        manifest = process_presentation(self.source, output)
+        result = Presentation(output)
+        toc = result.slides[0]
+        self.assertFalse([shape for shape in toc.shapes if getattr(shape, "is_placeholder", False)])
+        entries = [shape for shape in toc.shapes if shape.name.startswith("BigPrezo::TocEntry::")]
+        self.assertEqual(len(entries), 4)
+        # A short list should use compact rows rather than stretching links to
+        # fill almost the entire slide height.
+        self.assertLess(max(shape.height for shape in entries), Inches(0.60))
+        self.assertLess(max(shape.top for shape in entries) - min(shape.top for shape in entries), Inches(3.0))
+
+        source = Presentation(self.source)
+        for index, original in enumerate(source.slides, 1):
+            generated = result.slides[manifest["toc_slide_count"] + index - 1]
+            button = next(shape for shape in generated.shapes
+                          if shape.name == f"BigPrezo::Home::{index}")
+            self.assertTrue(button.fill.type is not None)
+            self.assertGreater(button.width, Inches(0.9))
+            self.assertEqual(button.click_action.target_slide.slide_id, toc.slide_id)
+            # Original placeholders remain on source slides; cleanup applies
+            # only to generated contents pages.
+            self.assertEqual(sum(getattr(s, "is_placeholder", False) for s in generated.shapes),
+                             sum(getattr(s, "is_placeholder", False) for s in original.shapes))
+
+    def test_contents_generation_with_title_and_content_layout(self):
+        alternate = self.root / "alternate_layout.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        slide.shapes.title.text = "Different layout"
+        slide.placeholders[1].text = "Original content placeholder stays on the source slide."
+        prs.save(alternate)
+        output = self.root / "alternate_layout_nav.pptx"
+        manifest = process_presentation(alternate, output)
+        generated = Presentation(output)
+        self.assertFalse([shape for shape in generated.slides[0].shapes
+                          if getattr(shape, "is_placeholder", False)])
+        source_slide = generated.slides[manifest["toc_slide_count"]]
+        self.assertTrue(any(getattr(shape, "is_placeholder", False)
+                            and shape.text == "Original content placeholder stays on the source slide."
+                            for shape in source_slide.shapes))
+
     def test_section_detection_and_no_section_fallback(self):
         self.assertTrue(probable_section_boundary("Part 2 — Delivery", "Part 2 — Delivery | divider"))
         self.assertFalse(probable_section_boundary("Quarterly update", "Quarterly update | five bullets"))
