@@ -15,7 +15,6 @@ from pptx.util import Inches, Pt
 _MARKER_TOC = "BigPrezo::GeneratedToc"
 _MARKER_HOME = "BigPrezo::Home::"
 _SECTION_WORDS = re.compile(r"\b(part|section|chapter|appendix|appendices|workstream|agenda|overview|closing|q\s*&\s*a)\b", re.I)
-_MAX_ROW_CHARS = 96
 _DEFAULT_ROWS_PER_TOC = 18
 
 
@@ -38,14 +37,17 @@ def _slide_title(slide: Any, texts: list[str]) -> str:
 
 
 def probable_section_boundary(title: str, compact_text: str, *, max_body_chars: int = 140) -> bool:
-    """Return true when a titled slide uses section vocabulary and has little body copy."""
+    """Return true when a titled slide looks like a sparse section divider."""
     title = (title or "").strip()
     if not title:
         return False
     body = compact_text.replace(title, "", 1).strip()
     explicit = bool(_SECTION_WORDS.search(title))
     sparse = len(body) <= max_body_chars
-    return explicit and sparse
+    # Many real-world decks use plain topic titles (for example, "Email
+    # Templates") for divider slides. Sparse content is a strong structural
+    # signal even when the title has no conventional section keyword.
+    return sparse and (explicit or len(body) <= 48)
 
 
 def manifest_for_slides(slides: Iterable[Any], *, compact_limit: int = 500) -> dict[str, Any]:
@@ -167,6 +169,11 @@ def _add_text_shape(slide: Any, x: int, y: int, w: int, h: int, text: str,
     run.font.size = Pt(font_size)
     run.font.bold = bold
     run.font.color.rgb = color
+    if name and name.startswith("BigPrezo::TocEntry::"):
+        # Keep a visible cue in edit mode as well as the shape-level jump used
+        # during Slide Show. The shape action remains the primary click target.
+        run.font.color.rgb = RGBColor(31, 78, 121)
+        run.font.underline = True
     return shape
 
 
@@ -180,28 +187,82 @@ def _insert_slides_at_front(prs: Any, new_slides: list[Any]) -> None:
                 break
 
 
-def _add_home_button(slide: Any, target: Any, number: int, width: int, height: int) -> None:
-    button_w, button_h = Inches(0.86), Inches(0.30)
-    margin = Inches(0.18)
-    x = max(Inches(0.1), width - button_w - margin)
-    y = max(Inches(0.1), height - button_h - margin)
-    button = _add_text_shape(slide, x, y, button_w, button_h, "HOME / TOC",
-                             font_size=9, color=RGBColor(255, 255, 255), bold=True,
-                             name=f"{_MARKER_HOME}{number}", align=PP_ALIGN.CENTER,
-                             fill=RGBColor(31, 78, 121))
+def _rgb_from_title(slides: list[Any]) -> RGBColor:
+    """Reuse the source deck's first usable title colour, with a restrained fallback."""
+    for slide in slides:
+        title = getattr(slide.shapes, "title", None)
+        if title is None or not title.has_text_frame:
+            continue
+        for paragraph in title.text_frame.paragraphs:
+            for run in paragraph.runs:
+                try:
+                    color = run.font.color.rgb
+                except (AttributeError, TypeError):
+                    color = None
+                if color is not None:
+                    return RGBColor(color[0], color[1], color[2])
+    return RGBColor(45, 71, 90)
+
+
+def _overlaps(x: int, y: int, w: int, h: int, shape: Any) -> bool:
+    return (x < shape.left + shape.width and x + w > shape.left
+            and y < shape.top + shape.height and y + h > shape.top)
+
+
+def _add_home_button(slide: Any, target: Any, number: int, width: int, height: int,
+                     accent: RGBColor) -> None:
+    button_w, button_h = Inches(0.94), Inches(0.32)
+    margin = Inches(0.20)
+    positions = [
+        (width - button_w - margin, margin),
+        (width - button_w - margin, height - button_h - margin),
+        (margin, height - button_h - margin),
+        (margin, margin),
+    ]
+    # Prefer a quiet corner with no existing content, including footers and logos.
+    x, y = min(positions, key=lambda pos: sum(
+        _overlaps(pos[0], pos[1], button_w, button_h, shape)
+        for shape in slide.shapes if not shape.name.startswith(_MARKER_HOME)))
+    button = _add_text_shape(slide, x, y, button_w, button_h, "HOME · TOC",
+                             font_size=9, color=accent, bold=True,
+                             name=f"{_MARKER_HOME}{number}", align=PP_ALIGN.CENTER)
     _set_hyperlink(button, target)
 
 
+def _clean_title(value: Any) -> str:
+    value = str(value or "")
+    value = value.replace("_x000B_", " ").replace("_x000b_", " ")
+    value = re.sub(r"[\x00-\x1f\x7f]", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
 def _section_label(record: dict[str, Any]) -> str:
-    return str(record.get("section") or "Slides")
+    return _clean_title(record.get("section") or "Slides")
+
+
+def _toc_items(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten groups into section headings and entries, suppressing divider duplicates."""
+    items: list[dict[str, Any]] = []
+    last_section = None
+    for record in records:
+        section = _section_label(record)
+        title = _clean_title(record.get("title")) or "(Untitled slide)"
+        boundary = bool(record.get("probable_section_boundary"))
+        same_title = title.casefold() == section.casefold()
+        if section != "Opening" and (section != last_section or boundary):
+            items.append({"kind": "section", "text": section,
+                          "slide_number": record["slide_number"]})
+        if not (boundary and same_title):
+            items.append({"kind": "entry", "text": title,
+                          "slide_number": record["slide_number"]})
+        last_section = section
+    return items
 
 
 def _add_toc_slides(prs: Any, source_slides: list[Any], manifest: dict[str, Any],
                     *, rows_per_toc: int = _DEFAULT_ROWS_PER_TOC) -> list[Any]:
     layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[-1]
     records = manifest["slides"]
-    # Long decks are easier to scan when the first contents page is a concise
-    # section index. Small decks retain the familiar all-slide contents list.
     concise = len(records) >= 30 and any(record["probable_section_boundary"] for record in records)
     if concise:
         grouped: list[tuple[str, list[dict[str, Any]]]] = []
@@ -213,55 +274,68 @@ def _add_toc_slides(prs: Any, source_slides: list[Any], manifest: dict[str, Any]
         toc_records = []
         for label, group in grouped:
             first, last = group[0]["slide_number"], group[-1]["slide_number"]
-            toc_records.append({
-                "slide_number": first,
-                "title": f"{label} · slides {first}–{last}" if first != last else f"{label} · slide {first}",
-                "section": label,
-            })
+            title = f"{label} · slides {first}–{last}" if first != last else f"{label} · slide {first}"
+            toc_records.append({"slide_number": first, "title": title, "section": label,
+                                "probable_section_boundary": True})
     else:
         toc_records = records
-    chunks = [toc_records[i:i + rows_per_toc] for i in range(0, len(toc_records), rows_per_toc)] or [[]]
+    if concise:
+        items = [{"kind": "section", "text": _clean_title(record["title"]),
+                  "slide_number": record["slide_number"]} for record in toc_records]
+    else:
+        items = _toc_items(toc_records)
+    page_capacity = max(2, rows_per_toc)
+    chunks = [items[i:i + page_capacity] for i in range(0, len(items), page_capacity)] or [[]]
     toc_slides: list[Any] = [prs.slides.add_slide(layout) for _ in chunks]
     width, height = prs.slide_width, prs.slide_height
+    accent = _rgb_from_title(source_slides)
     for page_index, chunk in enumerate(chunks):
         slide = toc_slides[page_index]
         marker = _add_text_shape(slide, 0, 0, 1, 1, "", font_size=1,
-                                 color=RGBColor(255, 255, 255), name=_MARKER_TOC)
+                                 color=accent, name=_MARKER_TOC)
         marker.left = -Inches(1)
         marker.top = -Inches(1)
-        _add_text_shape(slide, Inches(0.55), Inches(0.27), width - Inches(1.1), Inches(0.48),
-                        "Contents" if len(chunks) == 1 else f"Contents · {page_index + 1} of {len(chunks)}",
-                        font_size=26, color=RGBColor(31, 78, 121), bold=True, name="BigPrezo::TocHeading")
-        top, bottom = Inches(0.95), Inches(0.72)
-        row_h = max(Inches(0.25), int((height - top - bottom) / max(1, rows_per_toc)))
-        row_w = width - Inches(1.1)
-        last_section = None
-        for row_index, record in enumerate(chunk):
-            slide_number = record["slide_number"]
-            target = source_slides[slide_number - 1]
-            section = _section_label(record)
+        heading = "Contents" if len(chunks) == 1 else f"Contents · {page_index + 1} of {len(chunks)}"
+        _add_text_shape(slide, Inches(0.58), Inches(0.30), width - Inches(1.16), Inches(0.48),
+                        heading, font_size=25, color=accent, bold=True,
+                        name="BigPrezo::TocHeading")
+        top, bottom = Inches(1.02), Inches(0.72)
+        columns = 2
+        per_column = (len(chunk) + columns - 1) // columns
+        gap = Inches(0.34)
+        side = Inches(0.58)
+        col_w = (width - side * 2 - gap) // columns
+        row_h = (height - top - bottom) // max(1, per_column)
+        for item_index, item in enumerate(chunk):
+            col, row_index = divmod(item_index, per_column)
             row_y = top + row_index * row_h
-            label = f"{slide_number:02d}  {record['title'] or '(Untitled slide)'}"
-            if section and section != "Opening" and section != last_section:
-                label = f"{section}   ·   {label}"
-            last_section = section
-            label = label[:_MAX_ROW_CHARS]
-            row = _add_text_shape(slide, Inches(0.55), row_y, row_w, row_h - Inches(0.035), label,
-                                  font_size=12, color=RGBColor(31, 41, 55),
-                                  fill=RGBColor(232, 240, 248), name=f"BigPrezo::TocEntry::{slide_number}")
-            _set_hyperlink(row, target)
+            x = side + col * (col_w + gap)
+            is_section = item["kind"] == "section"
+            color = accent if is_section else RGBColor(42, 50, 58)
+            shape = _add_text_shape(
+                slide, x, row_y, col_w, row_h - Inches(0.025), item["text"],
+                font_size=12 if is_section else 11, color=color, bold=is_section,
+                name=f"BigPrezo::TocEntry::{item['slide_number']}")
+            shape.text_frame.word_wrap = True
+            if is_section and shape.text_frame.paragraphs[0].runs:
+                # Keep linked section headings in the deck's accent colour;
+                # ordinary entries retain their quieter hyperlink styling.
+                shape.text_frame.paragraphs[0].runs[0].font.color.rgb = accent
+                shape.text_frame.paragraphs[0].runs[0].font.underline = False
+            target = source_slides[item["slide_number"] - 1]
+            # Section headings can themselves represent linked divider slides.
+            _set_hyperlink(shape, target)
         if page_index > 0:
-            prev = _add_text_shape(slide, Inches(0.55), height - Inches(0.55), Inches(2.1), Inches(0.3),
-                                   "‹ Previous contents", font_size=10, color=RGBColor(31, 78, 121),
+            prev = _add_text_shape(slide, Inches(0.58), height - Inches(0.55), Inches(2.1), Inches(0.3),
+                                   "‹ Previous contents", font_size=10, color=accent,
                                    name="BigPrezo::TocPrevious")
             _set_hyperlink(prev, toc_slides[page_index - 1])
         if page_index + 1 < len(chunks):
-            nxt = _add_text_shape(slide, width - Inches(2.65), height - Inches(0.55), Inches(2.1), Inches(0.3),
-                                  "Next contents ›", font_size=10, color=RGBColor(31, 78, 121),
+            nxt = _add_text_shape(slide, width - Inches(2.68), height - Inches(0.55), Inches(2.1), Inches(0.3),
+                                  "Next contents ›", font_size=10, color=accent,
                                   align=PP_ALIGN.RIGHT, name="BigPrezo::TocNext")
             _set_hyperlink(nxt, toc_slides[page_index + 1])
     return toc_slides
-
 
 def process_presentation(input_path: str | Path, output_path: str | Path,
                          manifest_path: str | Path | None = None, *,
@@ -293,7 +367,7 @@ def process_presentation(input_path: str | Path, output_path: str | Path,
     for old_slide in old_toc_slides:
         _delete_slide(prs, old_slide)
     for number, slide in enumerate(original_slides, 1):
-        _add_home_button(slide, toc_slides[0], number, prs.slide_width, prs.slide_height)
+        _add_home_button(slide, toc_slides[0], number, prs.slide_width, prs.slide_height, _rgb_from_title(original_slides))
     _insert_slides_at_front(prs, toc_slides)
     toc_count = len(toc_slides)
     manifest["toc_slide_count"] = toc_count

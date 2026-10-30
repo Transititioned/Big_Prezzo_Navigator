@@ -55,3 +55,11 @@
 ## Pass 2 boundary
 
 Add the upload/review/download flow and the separate HTML speaking-notes console. Reuse the v3 persistence safeguards if that document is supplied, and keep browser note persistence separate from the PPTX notes lifecycle. Do not add AI until the deterministic MVP is usable.
+
+## Pass 2A visual polish
+
+- Contents pages now use a restrained, source-title accent colour when PowerPoint exposes one, with a slate fallback, a two-column layout, separate section headings, and wrapped slide titles. Divider headings that match their section label appear once and link to that divider. Long-deck section summaries remain paginated, and displayed titles remove escaped `_x000B_` markers and control characters.
+- Home / TOC controls use a compact transparent label in the least occupied slide corner, selected by checking existing shape bounds. Their native slide-object links are preserved.
+- Structural validation reopened generated short and 50-slide decks. The short-deck check covered two-page pagination, a long Unicode title, escaped markers, duplicate section titles, and TOC/Home targets. The long-deck check covered two linked section summaries.
+- The full suite currently has three failures associated with the checkout's pre-existing broad sparse-title section heuristic: `test_review_extracts_slides_and_editable_section_rows`, `test_section_detection_and_no_section_fallback`, and `test_large_deck_uses_section_summary_contents`. The heuristic classifies ordinary title-only slides as dividers, producing the mismatch.
+- Manual PowerPoint visual verification remains necessary for text wrapping on unusually long titles and corner selection around unusual logos/footers. The latest two screenshots were not present in the repository at review time. Confirm rendering and Slide Show clicks in desktop PowerPoint.
